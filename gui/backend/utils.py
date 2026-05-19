@@ -70,8 +70,7 @@ def _start(dev_mode):
         backend.START_URL,
         host     = config['host'],
         port     = listen_port,
-        mode     = None,
-        callback = on_close_callback
+        mode     = None
     )
 
 
@@ -95,7 +94,7 @@ def create_config_json():
         stdin  = subprocess.PIPE,
         stdout = subprocess.PIPE
     )
-    _ = popen.communicate(json.dumps(default_config))
+    _ = popen.communicate(json.dumps(default_config).encode('utf-8'))
     if popen.returncode != 0:
         raise ValueError('invalid default config.json')
 

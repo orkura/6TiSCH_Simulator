@@ -104,7 +104,7 @@ def collect_setting_keys_in_use():
                     # identify a setting key in in this line
                     pattern = re.compile(
                         '(' + '|'.join(settings_variables) + ')' +
-                        '\.(\w+)'
+                        '\\.(\\w+)'
                     )
                     m = re.search(pattern, line)
                     if m is not None:

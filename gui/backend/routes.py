@@ -21,7 +21,7 @@ def get_config_json():
     return btl.static_file(filename, root=root, download=filename)
 
 
-@btl.get('/result/<result_zip_file_name:re:.*\.zip>')
+@btl.get('/result/<result_zip_file_name:re:.*\\.zip>')
 def get_result_zip_file(result_zip_file_name):
     result_subdir_name = result_zip_file_name[:-4]
     result_subdir_path = os.path.join(
