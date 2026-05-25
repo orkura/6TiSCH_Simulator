@@ -45,6 +45,38 @@ _sim_engine = None
 _elapsed_minutes = 0
 
 
+def _return_success(**kwargs):
+    ret = {'status': RETURN_STATUS_SUCCESS}
+    ret.update(kwargs)
+    return ret
+
+
+def _return_failure(message, trace=None):
+    ret = {
+        'status': RETURN_STATUS_FAILURE,
+        'message': str(message),
+    }
+    if trace is not None:
+        ret['trace'] = trace
+    return ret
+
+
+def _get_result_path(result_name):
+    if (
+            isinstance(result_name, str) is False
+            or result_name in ['', '.', '..']
+            or os.path.basename(os.path.normpath(result_name)) != result_name
+        ):
+        raise ValueError('invalid result name')
+
+    sim_data_path = os.path.abspath(backend.SIM_DATA_PATH)
+    result_path = os.path.abspath(os.path.join(sim_data_path, result_name))
+    if os.path.commonpath([sim_data_path, result_path]) != sim_data_path:
+        raise ValueError('invalid result name')
+
+    return result_path
+
+
 # exported functions
 
 
@@ -121,7 +153,9 @@ def put_default_config(config_str):
         stdout = subprocess.PIPE,
         stderr = subprocess.PIPE
     )
-    _, stderrdata = popen.communicate(json.dumps(new_config))
+    _, stderrdata = popen.communicate(
+        json.dumps(new_config).encode('utf-8')
+    )
 
     if popen.returncode == 0:
         # if the check succeeds, update the default config.json
@@ -137,7 +171,7 @@ def put_default_config(config_str):
         # return error message
         ret = {
             'config': None,
-            'message': stderrdata
+            'message': stderrdata.decode('utf-8', errors='replace')
         }
 
     return ret
@@ -157,7 +191,7 @@ def get_available_scheduling_functions():
 
     # remove "SchedulingFunctionBase" that is the base (super) class
     # for concrete scheduling function implementations
-    ret_val.remove('SchedulingFunctionBase')
+    ret_val.discard('SchedulingFunctionBase')
 
     # strip leading "SchedulingFunction" and return
     return [re.sub(r'SchedulingFunction(\w+)', r'\1', elem) for elem in ret_val]
@@ -210,7 +244,7 @@ def get_available_connectivities():
 
     # remove "ConnectivityMatrixBase" that is the base (super) class
     # for concrete scheduling function implementations
-    ret_val.remove('ConnectivityMatrixBase')
+    ret_val.discard('ConnectivityMatrixBase')
 
     # strip leading "Connectivity" and return
     return [re.sub(r'ConnectivityMatrix(\w+)', r'\1', elem) for elem in ret_val]
@@ -224,6 +258,9 @@ def start(settings, log_notification_filter='all', stderr_redirect=True):
     sim_settings = None
     sim_log = None
     ret_val = {}
+    dat_file_path = None
+    new_file_name = None
+    subdir_path = None
 
     if _sim_engine is not None:
         return {
@@ -283,17 +320,19 @@ def start(settings, log_notification_filter='all', stderr_redirect=True):
         ret_val['message'] = str(e)
         ret_val['trace'] = traceback.format_exc()
     else:
-        if _sim_engine.getAsn() == (
-                sim_settings.exec_numSlotframesPerRun *
-                sim_settings.tsch_slotframeLength
+        if (
+                _sim_engine is not None
+                and
+                _sim_engine.getAsn() == (
+                    sim_settings.exec_numSlotframesPerRun *
+                    sim_settings.tsch_slotframeLength
+                )
             ):
             ret_val['status'] = RETURN_STATUS_SUCCESS
-            # rename .dat file and remove the subdir
+            # Defer renaming until cleanup closes SimLog's output file.
             dat_file_path = sim_settings.getOutputFile()
             subdir_path = os.path.dirname(dat_file_path)
             new_file_name = subdir_path + '.dat'
-            os.rename(dat_file_path, new_file_name)
-            os.rmdir(subdir_path)
         else:
             # simulation is aborted
             ret_val['status'] = RETURN_STATUS_ABORTED
@@ -316,6 +355,19 @@ def start(settings, log_notification_filter='all', stderr_redirect=True):
         else:
             _destroy_sim()
 
+        if (
+                ret_val.get('status') == RETURN_STATUS_SUCCESS
+                and
+                dat_file_path is not None
+            ):
+            try:
+                os.rename(dat_file_path, new_file_name)
+                os.rmdir(subdir_path)
+            except Exception as e:
+                ret_val['status'] = RETURN_STATUS_FAILURE
+                ret_val['message'] = str(e)
+                ret_val['trace'] = traceback.format_exc()
+
     return ret_val
 
 
@@ -323,56 +375,48 @@ def start(settings, log_notification_filter='all', stderr_redirect=True):
 def pause():
     global _sim_engine
 
+    if _sim_engine is None:
+        return _return_failure('No simulation is running')
+
     try:
         # we cannot make the simulation pause on the current ASN because
         # of a limitation of the event scheduler; so we schedule pause on
         # the next ASN
         _sim_engine.pauseAtAsn(_sim_engine.getAsn() + 1)
     except Exception as e:
-        return {
-            'status':  RETURN_STATUS_FAILURE,
-            'message': e,
-            'trace': traceback.format_exc()
-        }
+        return _return_failure(e, traceback.format_exc())
     else:
-        return {
-            'status': RETURN_STATUS_SUCCESS
-        }
+        return _return_success()
 
 
 @eel.expose
 def resume():
     global _sim_engine
 
+    if _sim_engine is None:
+        return _return_failure('No simulation is running')
+
     try:
         _sim_engine.play()
     except Exception as e:
-        return {
-            'status':  RETURN_STATUS_FAILURE,
-            'message': e,
-            'trace': traceback.format_exc()
-        }
+        return _return_failure(e, traceback.format_exc())
     else:
-        return {
-            'status': RETURN_STATUS_SUCCESS
-        }
+        return _return_success()
 
 
 @eel.expose
 def abort():
     global _sim_engine
+
+    if _sim_engine is None:
+        return _return_failure('No simulation is running')
+
     try:
         _destroy_sim()
     except Exception as e:
-        return {
-            'status':  RETURN_STATUS_FAILURE,
-            'message': e,
-            'trace': traceback.format_exc()
-        }
+        return _return_failure(e, traceback.format_exc())
     else:
-        return {
-            'status': RETURN_STATUS_SUCCESS
-        }
+        return _return_success()
 
 
 @eel.expose
@@ -382,29 +426,42 @@ def get_sim_data_path():
 
 @eel.expose
 def delete_all_results():
-    for result_subdir_name in os.listdir(backend.SIM_DATA_PATH):
-        delete_result(result_subdir_name)
+    if os.path.exists(backend.SIM_DATA_PATH) is False:
+        return
+
+    for result_name in list(os.listdir(backend.SIM_DATA_PATH)):
+        delete_result(result_name)
 
 
 @eel.expose
-def delete_result(result_subdir_name):
-    path = os.path.join(backend.SIM_DATA_PATH, result_subdir_name)
-    shutil.rmtree(path)
+def delete_result(result_name):
+    path = _get_result_path(result_name)
+    if os.path.isdir(path):
+        shutil.rmtree(path)
+    elif os.path.isfile(path):
+        os.remove(path)
+    else:
+        raise IOError('result does not exist: {0}'.format(result_name))
 
 
 @eel.expose
 def get_total_number_of_results():
+    if os.path.exists(backend.SIM_DATA_PATH) is False:
+        return 0
     return len(os.listdir(backend.SIM_DATA_PATH))
 
 
 @eel.expose
 def get_results(start_index, max_num_results):
+    if os.path.exists(backend.SIM_DATA_PATH) is False:
+        return []
+
     results = sorted(os.listdir(backend.SIM_DATA_PATH), reverse=True)
     end_index = start_index + max_num_results
 
     ret = []
     for result in results[start_index:end_index]:
-        result_path = os.path.join(backend.SIM_DATA_PATH, result)
+        result_path = _get_result_path(result)
         last_modified = time.strftime(
             '%b %d %Y %H:%M:%S',
             time.localtime(os.path.getmtime(result_path))
@@ -421,7 +478,7 @@ def get_results(start_index, max_num_results):
                 settings['exec_numMotes'] = (
                     config['settings']['combination']['exec_numMotes'][0]
                 )
-        except (IOError, ValueError, TypeError):
+        except (IOError, OSError, ValueError, TypeError, AssertionError):
             settings = None
         ret.append({
             'name': result,
@@ -484,7 +541,7 @@ def _overwrite_sim_log_log(log_notification_filter):
     if log_notification_filter == 'all':
         _filter = 'all'
     elif isinstance(log_notification_filter, str):
-        _filter = DEFAULT_LOG_NOTIFICATION_FILTER
+        _filter = list(DEFAULT_LOG_NOTIFICATION_FILTER)
         _filter.append(log_notification_filter)
     elif isinstance(log_notification_filter, list):
         _filter = DEFAULT_LOG_NOTIFICATION_FILTER + log_notification_filter
@@ -544,6 +601,10 @@ def _restore_stderr():
 def _destroy_sim():
     global _sim_engine
     global _elapsed_minutes
+
+    if _sim_engine is None:
+        _elapsed_minutes = 0
+        return
 
     sim_log = SimLog.SimLog()
     connectivity = _sim_engine.connectivity
